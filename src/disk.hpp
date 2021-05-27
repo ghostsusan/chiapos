@@ -22,6 +22,8 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <fcntl.h>
+#include <unistd.h>
 
 // enables disk I/O logging to disk.log
 // use tools/disk.gnuplot to generate a plot
@@ -115,6 +117,8 @@ struct FileDisk {
             f_ = ::_wfopen(filename_.c_str(), (flags & writeFlag) ? L"w+b" : L"r+b");
 #else
             f_ = ::fopen(filename_.c_str(), (flags & writeFlag) ? "w+b" : "r+b");
+            fd_ = fileno(f_);
+            posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL | POSIX_FADV_WILLNEED);
 #endif
             if (f_ == nullptr) {
                 std::string error_message =
@@ -133,6 +137,8 @@ struct FileDisk {
     {
         filename_ = std::move(fd.filename_);
         f_ = fd.f_;
+        fd_ = fd.fd_;
+        fd.fd_ = 0;
         fd.f_ = nullptr;
     }
 
@@ -144,6 +150,7 @@ struct FileDisk {
         if (f_ == nullptr) return;
         ::fclose(f_);
         f_ = nullptr;
+        fd_ = 0;
         readPos = 0;
         writePos = 0;
     }
@@ -159,17 +166,7 @@ struct FileDisk {
         // Seek, read, and replace into memcache
         uint64_t amtread;
         do {
-            if ((!bReading) || (begin != readPos)) {
-#ifdef _WIN32
-                _fseeki64(f_, begin, SEEK_SET);
-#else
-                // fseek() takes a long as offset, make sure it's wide enough
-                static_assert(sizeof(long) >= sizeof(begin));
-                ::fseek(f_, begin, SEEK_SET);
-#endif
-                bReading = true;
-            }
-            amtread = ::fread(reinterpret_cast<char *>(memcache), sizeof(uint8_t), length, f_);
+            amtread = ::pread(fd_, reinterpret_cast<char *>(memcache), length, begin);
             readPos = begin + amtread;
             if (amtread != length) {
                 std::cout << "Only read " << amtread << " of " << length << " bytes at offset "
@@ -194,18 +191,8 @@ struct FileDisk {
         // Seek and write from memcache
         uint64_t amtwritten;
         do {
-            if ((bReading) || (begin != writePos)) {
-#ifdef _WIN32
-                _fseeki64(f_, begin, SEEK_SET);
-#else
-                // fseek() takes a long as offset, make sure it's wide enough
-                static_assert(sizeof(long) >= sizeof(begin));
-                ::fseek(f_, begin, SEEK_SET);
-#endif
-                bReading = false;
-            }
             amtwritten =
-                ::fwrite(reinterpret_cast<const char *>(memcache), sizeof(uint8_t), length, f_);
+                ::pwrite(fd_, reinterpret_cast<const char *>(memcache), length, begin);
             writePos = begin + amtwritten;
             if (writePos > writeMax)
                 writeMax = writePos;
@@ -242,6 +229,7 @@ private:
 
     fs::path filename_;
     FILE *f_ = nullptr;
+    int fd_ = 0;
 
     static const uint8_t writeFlag = 0b01;
     static const uint8_t retryOpenFlag = 0b10;

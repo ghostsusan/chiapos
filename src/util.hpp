@@ -320,9 +320,8 @@ namespace Util {
             return (left_arr[start_byte] & mask) - (right_arr[start_byte] & mask);
         }
 
-        for (uint32_t i = start_byte + 1; i < len; i++) {
-            if (left_arr[i] != right_arr[i])
-                return left_arr[i] - right_arr[i];
+        if (len > start_byte + 1) {
+            return memcmp( left_arr + start_byte + 1, right_arr + start_byte+1, (len - start_byte - 1));
         }
         return 0;
     }

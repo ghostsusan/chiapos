@@ -20,6 +20,8 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <thread>
+#include <future>
 
 #include "./disk.hpp"
 #include "./util.hpp"
@@ -35,7 +37,7 @@ namespace UniformSort {
 
 
 
-    inline void SortToMemory2(
+    inline void SortToMemory(
         FileDisk &input_disk,
         uint64_t const input_disk_begin,
         uint8_t *const memory,
@@ -54,7 +56,7 @@ namespace UniformSort {
         uint64_t read_pos = input_disk_begin;
         uint64_t buf_size = 0;
         uint64_t buf_ptr = 0;
-        uint64_t swaps = 0;
+        // uint64_t swaps = 0;
         for (uint64_t i = 0; i < num_entries; i++) {
             if (buf_size == 0) {
                 // If read buffer is empty, read from disk and refill it.
@@ -77,7 +79,7 @@ namespace UniformSort {
                     memcpy(swap_space.get(), memory + pos, entry_len);
                     memcpy(memory + pos, buffer.get() + buf_ptr, entry_len);
                     memcpy(buffer.get() + buf_ptr, swap_space.get(), entry_len);
-                    swaps++;
+                    // swaps++;
                 }
                 pos += entry_len;
             }
@@ -97,29 +99,52 @@ namespace UniformSort {
                     memory + entries_written * entry_len,
                     memory + pos,
                     entry_len);
-                debug.push_back(
-                    Util::ExtractNum(memory + pos, entry_len, bits_begin, bucket_length));
+                // debug.push_back(
+                //     Util::ExtractNum(memory + pos, entry_len, bits_begin, bucket_length));
                 entries_written++;
             }
         }
-
-        std::cout << "Memlen: " << memory_len << ", entry num: " << num_entries
-                  << ", entry len: " << entry_len << ", entry mem: " << entry_len * num_entries << ", Entry write: " << entries_written
-                  << "\n";
-        std::cout << "Debug[RA]: ";
-        for (size_t i = 0; i < 50; ++i) {
-            std::cout << std::setw(8) << debug[i] << ", ";
-        }
-        std::cout << " ... ";
-        for (size_t i = debug.size() - 50; i < debug.size(); ++i) {
-            std::cout << std::setw(8) << debug[i] << ", ";
-        }
-        std::cout << "\n";
         assert(entries_written == num_entries);
     }
 
+    void parallel_sort(
+            uint8_t *const memory,  
+            size_t *pos,
+            size_t *idx,
+            uint64_t const input_disk_begin,
+            uint64_t const beg, 
+            uint64_t const end,
+            uint32_t const entry_len,
+            uint32_t const bits_begin)
+            
+    {
+        auto th = [&](uint64_t beg, uint64_t end) {
+            // uint64_t read_pos = input_disk_begin + beg * entry_len;
+            // input_disk.Read(read_pos, memory + beg * entry_len, (end - beg) * entry_len);
+            std::stable_sort(idx + beg, idx + end, [&](size_t i1, size_t i2) {
+                if (pos[i1] == pos[i2]) {
+                    return Util::MemCmpBits(
+                               memory + i1 * entry_len, memory + i2 * entry_len, entry_len, bits_begin) < 0;
+                }
+                return pos[i1] < pos[i2];
+            });
+        };
 
-    inline void SortToMemory(
+
+        std::thread t1(th, beg, (beg+end)/2);
+        std::thread t2(th, (beg+end)/2, end);
+        t1.join();
+        t2.join();
+        std::inplace_merge(idx + beg, idx + (beg + end) / 2, idx + end, [&](size_t i1, size_t i2) {
+                if (pos[i1] == pos[i2]) {
+                    return Util::MemCmpBits(
+                               memory + i1 * entry_len, memory + i2 * entry_len, entry_len, bits_begin) < 0;
+                }
+                return pos[i1] < pos[i2];
+        });
+    }
+
+    inline void SortToMemory2(
         FileDisk &input_disk,
         uint64_t const input_disk_begin,
         uint8_t *const memory,
@@ -127,65 +152,29 @@ namespace UniformSort {
         uint64_t const num_entries,
         uint32_t const bits_begin)
     {
-
-
-        uint64_t const memory_len = Util::RoundSize(num_entries) * entry_len;
-        auto const swap_space = std::make_unique<uint8_t[]>(entry_len);
-        auto const buffer = std::make_unique<uint8_t[]>(BUF_SIZE);
+        // uint64_t const memory_len = Util::RoundSize(num_entries) * entry_len;
         uint64_t bucket_length = 0;
-
-
-        // SortToMemory2(input_disk, input_disk_begin, memory, entry_len, num_entries, bits_begin);
-        // uint8_t* mem_cpy = new uint8_t[memory_len];
-        // memcpy(mem_cpy, memory, memory_len);
-
         // The number of buckets needed (the smallest power of 2 greater than 2 * num_entries).
         while ((1ULL << bucket_length) < 2 * num_entries) bucket_length++;
-        memset(memory, 0, memory_len);
+        // memset(memory, 0, memory_len);
 
         uint64_t read_pos = input_disk_begin;
-        uint64_t buf_ptr = 0;
-        std::vector<uint64_t> pos_vec;
-        assert(num_entries * entry_len < memory_len);
-        input_disk.Read(read_pos, memory, std::min(num_entries * entry_len, memory_len));
-       
-        uint8_t *cpy = new uint8_t[memory_len];
-        memcpy(cpy, memory, memory_len); 
-        
-        for (uint64_t i = 0; i < num_entries; i++) {
-            uint64_t pos = Util::ExtractNum(memory + buf_ptr, entry_len, bits_begin, bucket_length);
-            pos_vec.push_back(pos);
-            buf_ptr += entry_len;
-        }
+        std::thread future([&]() {input_disk.Read(read_pos, memory, num_entries * entry_len); });
 
-        // pos_vec.resize(100);
         std::vector<size_t> idx(num_entries);
+        std::vector<size_t> pos(num_entries);
         std::iota(idx.begin(), idx.end(), 0);
+        future.join();
+        for(size_t i = 0; i < pos.size(); ++i) {
+            pos[i] = Util::ExtractNum(memory + i * entry_len, entry_len, bits_begin, bucket_length);
+        }
+        // std::cout << "Entry num " << idx.size() << "\n";
+        parallel_sort(memory, pos.data(), idx.data(), input_disk_begin, 0, idx.size(), entry_len, bits_begin);
 
-        std::stable_sort(idx.begin(), idx.end(), [&](size_t i1, size_t i2) {
-            return Util::MemCmpBits(
-                       memory + i1 * entry_len, memory + i2 * entry_len, entry_len, bits_begin) < 0;
-        });
-        // return pos_vec[i1] <= pos_vec[i2];});
-
-        // std::map<size_t, size_t> re2;
-        // for(size_t i = 0; i < idx.size(); ++i) {
-        //     re2[i] = idx[i];
-        // }
-
-        // std::cout << "Debug[II]: ";
-        // for (uint64_t i = 0; i < std::min(uint64_t(100), num_entries); ++i) {
-        //     std::cout << std::setw(8) << i << ", ";
-        // }
-        // std::cout << "\nDebug[RA]: ";
-        // for (uint64_t i = 0; i < std::min(uint64_t(100), num_entries); ++i) {
-        //     std::cout << std::setw(8) << pos_vec[i] << ", ";
-        // }
-        // std::cout << "\nDebug[ID]: ";
-        // for (uint64_t i = 0; i < std::min(uint64_t(100), num_entries); ++i) {
-        //     std::cout << std::setw(8) << idx[i] << ", ";
-        // }
-
+        // std::stable_sort(idx.begin(), idx.end(), [&](size_t i1, size_t i2) {
+        //     return Util::MemCmpBits(
+        //                memory + i1 * entry_len, memory + i2 * entry_len, entry_len, bits_begin) < 0;
+        // });
 
         for (uint64_t i = 0; i < num_entries; ++i) {
             int cur = i;
@@ -197,31 +186,6 @@ namespace UniformSort {
             }
             idx[cur] = idx.size();
         }
-
-        // std::cout << "\nDebug[QS]: " ;
-        // for (uint64_t i = 0; i < 50; ++i) {
-        //     std::cout << std::setw(8) << Util::ExtractNum(memory + i * entry_len, entry_len, bits_begin, bucket_length) << ", ";
-        // }
-        // std::cout << " ... ";
-        // for (uint64_t i = num_entries - 50; i < num_entries; ++i) {
-        //     std::cout << std::setw(8) << Util::ExtractNum(memory + i * entry_len, entry_len, bits_begin, bucket_length) << ", ";
-        // }
-        // std::cout << std::endl;
-        // for(uint64_t i = 0; i < num_entries; ++i) {
-        //     if (0 != memcmp(mem_cpy + i * entry_len, memory + i * entry_len, entry_len)) {
-        //         int a = Util::ExtractNum(mem_cpy + i * entry_len, entry_len, bits_begin, bucket_length);
-        //         int b = Util::ExtractNum(memory + i * entry_len, entry_len, bits_begin, bucket_length);
-        //         int r = re2[i];
-        //         int c = Util::ExtractNum(cpy + r * entry_len, entry_len, bits_begin, bucket_length);
-        //         std::cout << "Found diff. " << i << ", pos1: " << a << ", pos2: " << b << ", raw: " << c << std::endl;
-        //         for(uint32_t j = 0; j < entry_len; ++j) {
-        //             std::cout <<  std::setw(2) << *(uint8_t*)(mem_cpy + i * entry_len + j) << " "
-        //                       <<  std::setw(2) << *(uint8_t*)(memory + i * entry_len + j) << " "
-        //                       <<  std::setw(2) << *(uint8_t*)(cpy + r * entry_len + j) << "\n";
-        //         }
-        //     }
-        // }
-
         return;
     }
 }
