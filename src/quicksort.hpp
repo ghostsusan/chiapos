@@ -21,11 +21,36 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <thread>
+#include <future>
 
 #include "util.hpp"
 
-namespace QuickSort {
 
+// MaskLen: BitBegin + NumBucketLog
+//   K: [20, 36]
+//   Log2(K): {4,5} 
+//   phase1: BitBegin: 0
+//           NumBucketLog: Log2(K) 
+//   phase2: BitBegin: K          
+//           NumBucketLog: Log2(K) 
+//   phase3: BitBegin: 0           
+//           NumBucketLog: Log2(K)
+//   phase4: BitBegin: 0
+//           NumBucketLog: Log2(K)
+// EntryLen: 
+//   phase1: 
+//     GetKeyPosOffsetSize(K)       {7,8,9,10}
+//     GetMaxEntrySize(k, 1, true); {7,8,9,10}
+//   phase2:
+//     GetKeyPosOffsetSize(k);      {7,8,9,10}
+//   phase3:
+//     GetMaxEntrySize(k, table_index + 1, false);  {20..30}
+//     cdiv(2 * k + (table_index == 6 ? 1 : 0), 8); {6,7,8,9,10}
+//   phase4:
+//     
+
+namespace QuickSort {
     inline static void SortInner(
         uint8_t *memory,
         uint64_t memory_len,
@@ -75,12 +100,15 @@ namespace QuickSort {
             }
         }
         memcpy(memory + lo * L, pivot_space, L);
+        auto const ps = std::make_unique<uint8_t[]>(L);
         if (lo - begin <= end - lo) {
-            SortInner(memory, memory_len, L, bits_begin, begin, lo, pivot_space);
+            auto future = std::async(lo - begin > 65535 ? std::launch::async : std::launch::deferred, SortInner, memory, memory_len, L, bits_begin, begin, lo, ps.get());
             SortInner(memory, memory_len, L, bits_begin, lo + 1, end, pivot_space);
+            future.wait();
         } else {
-            SortInner(memory, memory_len, L, bits_begin, lo + 1, end, pivot_space);
+            auto future = std::async(end - lo  > 65535 ? std::launch::async : std::launch::deferred, SortInner, memory, memory_len, L, bits_begin, lo + 1, end, ps.get());
             SortInner(memory, memory_len, L, bits_begin, begin, lo, pivot_space);
+            future.wait();
         }
     }
 
@@ -90,6 +118,7 @@ namespace QuickSort {
         uint64_t const num_entries,
         uint32_t const bits_begin)
     {
+        // std::cout << "EntryLen: " << entry_len << ", bits_begin: " << bits_begin << "\n";
         uint64_t const memory_len = (uint64_t)entry_len * num_entries;
         auto const pivot_space = std::make_unique<uint8_t[]>(entry_len);
         SortInner(memory, memory_len, entry_len, bits_begin, 0, num_entries, pivot_space.get());
