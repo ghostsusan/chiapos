@@ -597,7 +597,7 @@ std::vector<uint64_t> RunPhase1(
     uint8_t const num_threads,
     uint8_t const flags)
 {
-    std::cout << "Computing table 1" << std::endl;
+    std::cout << "Computing table 1, 4MB Buffer." << std::endl;
     globals.stripe_size = stripe_size;
     globals.num_threads = num_threads;
     Timer f1_start_time;

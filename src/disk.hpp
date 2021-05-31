@@ -104,7 +104,7 @@ struct FileDisk {
         Open(writeFlag);
     }
 
-    void Open(uint8_t flags = 0)
+    void Open(uint8_t flags = 0, size_t buf_size = (1<<22)) // 4MB buffer
     {
         // if the file is already open, don't do anything
         if (f_) return;
@@ -115,6 +115,18 @@ struct FileDisk {
             f_ = ::_wfopen(filename_.c_str(), (flags & writeFlag) ? L"w+b" : L"r+b");
 #else
             f_ = ::fopen(filename_.c_str(), (flags & writeFlag) ? "w+b" : "r+b");
+
+            if (0 != setvbuf ( f_, NULL , _IOFBF , buf_size)) {
+                std::cout << "Failed to enlarge io buf size. " << buf_size 
+                          << ", filename: " << filename_.string() << "\n";
+            } else {
+                // struct stat stats;
+                // if(fstat(fileno(f_), &stats) == -1) { // POSIX only
+                //     perror("fstat"); throw("Failed to open fstat.");
+                // }
+                // std::cout << "Open file: " << filename_.string() << ", Raw BUFSIZE: " << BUFSIZ
+                //           << ", posix block size: " << stats.st_blksize << "\n";
+            }
 #endif
             if (f_ == nullptr) {
                 std::string error_message =
