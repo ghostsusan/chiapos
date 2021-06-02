@@ -270,7 +270,8 @@ private:
         if (!memory_start_) {
             // we allocate the memory to sort the bucket in lazily. It'se freed
             // in FreeMemory() or the destructor
-            memory_start_.reset(new uint8_t[memory_size_]);
+            memory_start_.reset(new uint8_t[memory_size_ / 2]);
+            idx_arr_.reset(new uint32_t[memory_size_ / 2 / sizeof(uint32_t)]);
         }
 
         this->done = true;
@@ -307,11 +308,11 @@ private:
         // The number of buckets needed (the smallest power of 2 greater than 2 * num_entries).
         while ((1ULL << bucket_length) < 2 * bucket_entries) bucket_length++;
 
-
+        assert(memory_size_ / 2 >= bucket_entries * entry_size_);
         b.underlying_file.Read(0, memory_start_.get(), bucket_entries * entry_size_);
         auto round_size = Util::RoundSize(bucket_entries);
-        if (!force_quicksort && round_size * sizeof(uint32_t) <= memory_size_) {
-            idx_arr_.reset(new uint32_t[round_size]);
+        if (!force_quicksort && round_size * sizeof(uint32_t) <= memory_size_ / 2) {
+            // idx_arr_.reset(new uint32_t[round_size]);
             memset(idx_arr_.get(), 0xFF, sizeof(uint32_t) * round_size);
             std::cout << "\tBucket " << bucket_i << " uniform sort. Ram: " << std::fixed
                       << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
@@ -324,8 +325,6 @@ private:
                 bucket_entries,
                 begin_bits_ + log_num_buckets_, idx_arr_.get());
         } else {
-            // std::unique_ptr<uint32_t[]> idx_arr2_;
-            idx_arr_.reset(new uint32_t[bucket_entries]);
             for(size_t i = 0; i < bucket_entries; ++i) {
                 idx_arr_[i] = i;
             }
@@ -340,14 +339,14 @@ private:
             QuickSort::Sort2(memory_start_.get(), entry_size_, bucket_entries, begin_bits_ + log_num_buckets_, idx_arr_.get());
         }
 
-            // Deletes the bucket file
-            std::string filename = b.file.GetFileName();
-            b.underlying_file.Close();
-            fs::remove(fs::path(filename));
+        // Deletes the bucket file
+        std::string filename = b.file.GetFileName();
+        b.underlying_file.Close();
+        fs::remove(fs::path(filename));
 
-            this->final_position_start = this->final_position_end;
-            this->final_position_end += b.write_pointer;
-            this->next_bucket_to_sort += 1;
+        this->final_position_start = this->final_position_end;
+        this->final_position_end += b.write_pointer;
+        this->next_bucket_to_sort += 1;
     }
 };
 
