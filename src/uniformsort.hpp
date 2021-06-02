@@ -22,11 +22,34 @@
 #include <vector>
 #include <thread>
 #include <future>
+#include <atomic>
 
 #include "./disk.hpp"
 #include "./util.hpp"
 
 namespace UniformSort {
+
+class SpinLock {
+public:
+    SpinLock() : flag_(false) {}
+
+    void lock()
+    {
+        bool expect = false;
+        while (!flag_.compare_exchange_weak(expect, true))
+        {
+            expect = false;
+        }
+    }
+
+    void unlock()
+    {
+        flag_.store(false);
+    }
+
+private:
+    std::atomic<bool> flag_;
+};
 
     inline int64_t const BUF_SIZE = 262144;
     std::vector<uint8_t> ZERO_MEM(1024, 0);
@@ -43,151 +66,48 @@ namespace UniformSort {
         uint8_t *const memory,
         uint32_t const entry_len,
         uint64_t const num_entries,
-        uint32_t const bits_begin)
+        uint32_t const bits_begin,
+        uint32_t * idx_arr)
     {
-        uint64_t const memory_len = Util::RoundSize(num_entries) * entry_len;
-        auto const swap_space = std::make_unique<uint8_t[]>(entry_len);
-        auto const buffer = std::make_unique<uint8_t[]>(BUF_SIZE);
         uint64_t bucket_length = 0;
         // The number of buckets needed (the smallest power of 2 greater than 2 * num_entries).
         while ((1ULL << bucket_length) < 2 * num_entries) bucket_length++;
-        memset(memory, 0, memory_len);
 
-        uint64_t read_pos = input_disk_begin;
-        uint64_t buf_size = 0;
         uint64_t buf_ptr = 0;
-        // uint64_t swaps = 0;
+        auto round_size = Util::RoundSize(num_entries);
+
         for (uint64_t i = 0; i < num_entries; i++) {
-            if (buf_size == 0) {
-                // If read buffer is empty, read from disk and refill it.
-                buf_size = std::min((uint64_t)BUF_SIZE / entry_len, num_entries - i);
-                buf_ptr = 0;
-                input_disk.Read(read_pos, buffer.get(), buf_size * entry_len);
-                read_pos += buf_size * entry_len;
+            uint64_t position = Util::ExtractNum(memory + buf_ptr, entry_len, bits_begin, bucket_length);
+            uint32_t swap = i;
+
+            // auto ptr = __sync_val_compare_and_swap(&idx_arr[position], 0xFFFFFFFF, swap);
+            // // Failed to swap
+            // if (ptr == &idx_arr[position]) {
+            //     buf_ptr += entry_len;
+            //     continue;
+            // }
+
+            // spinlock.lock();
+            while (idx_arr[position] != 0xFFFFFFFF && position < round_size) {
+                // std::cout << "Pos: " << std::dec << position << ", swap: " << swap << ", idx_arr: " << std::hex << idx_arr[position] << std::endl;
+                if (Util::MemCmpBits( memory + idx_arr[position] * entry_len, memory + swap * entry_len, entry_len, bits_begin) > 0) {
+                    std::swap(idx_arr[position], swap);
+                } 
+                ++position;
             }
-            buf_size--;
-            // First unique bits in the entry give the expected position of it in the sorted array.
-            // We take 'bucket_length' bits starting with the first unique one.
-            uint64_t pos =
-                Util::ExtractNum(buffer.get() + buf_ptr, entry_len, bits_begin, bucket_length) *
-                entry_len;
-            // As long as position is occupied by a previous entry...
-            while (!IsPositionEmpty(memory + pos, entry_len) && pos < memory_len) {
-                // ...store there the minimum between the two and continue to push the higher one.
-                if (Util::MemCmpBits(
-                        memory + pos, buffer.get() + buf_ptr, entry_len, bits_begin) > 0) {
-                    memcpy(swap_space.get(), memory + pos, entry_len);
-                    memcpy(memory + pos, buffer.get() + buf_ptr, entry_len);
-                    memcpy(buffer.get() + buf_ptr, swap_space.get(), entry_len);
-                    // swaps++;
-                }
-                pos += entry_len;
-            }
-            // Push the entry in the first free spot.
-            memcpy(memory + pos, buffer.get() + buf_ptr, entry_len);
+            idx_arr[position] = swap;
+            // spinlock.unlock();
             buf_ptr += entry_len;
         }
         uint64_t entries_written = 0;
-        std::vector<uint64_t> debug;
-        // Search the memory buffer for occupied entries.
-        for (uint64_t pos = 0; entries_written < num_entries && pos < memory_len;
-             pos += entry_len) {
-            if (!IsPositionEmpty(memory + pos, entry_len)) {
-                // We've found an entry.
-                // write the stored entry itself.
-                memcpy(
-                    memory + entries_written * entry_len,
-                    memory + pos,
-                    entry_len);
-                // debug.push_back(
-                //     Util::ExtractNum(memory + pos, entry_len, bits_begin, bucket_length));
-                entries_written++;
+        for (size_t i = 0; entries_written < num_entries; ++i) {
+            if (idx_arr[i] != 0xFFFFFFFF) {
+                idx_arr[entries_written++] = idx_arr[i];
             }
         }
         assert(entries_written == num_entries);
     }
 
-    void parallel_sort(
-            uint8_t *const memory,  
-            size_t *pos,
-            size_t *idx,
-            uint64_t const input_disk_begin,
-            uint64_t const beg, 
-            uint64_t const end,
-            uint32_t const entry_len,
-            uint32_t const bits_begin)
-            
-    {
-        auto th = [&](uint64_t beg, uint64_t end) {
-            // uint64_t read_pos = input_disk_begin + beg * entry_len;
-            // input_disk.Read(read_pos, memory + beg * entry_len, (end - beg) * entry_len);
-            std::stable_sort(idx + beg, idx + end, [&](size_t i1, size_t i2) {
-                if (pos[i1] == pos[i2]) {
-                    return Util::MemCmpBits(
-                               memory + i1 * entry_len, memory + i2 * entry_len, entry_len, bits_begin) < 0;
-                }
-                return pos[i1] < pos[i2];
-            });
-        };
-
-
-        std::thread t1(th, beg, (beg+end)/2);
-        std::thread t2(th, (beg+end)/2, end);
-        t1.join();
-        t2.join();
-        std::inplace_merge(idx + beg, idx + (beg + end) / 2, idx + end, [&](size_t i1, size_t i2) {
-                if (pos[i1] == pos[i2]) {
-                    return Util::MemCmpBits(
-                               memory + i1 * entry_len, memory + i2 * entry_len, entry_len, bits_begin) < 0;
-                }
-                return pos[i1] < pos[i2];
-        });
-    }
-
-    inline void SortToMemory2(
-        FileDisk &input_disk,
-        uint64_t const input_disk_begin,
-        uint8_t *const memory,
-        uint32_t const entry_len,
-        uint64_t const num_entries,
-        uint32_t const bits_begin)
-    {
-        // uint64_t const memory_len = Util::RoundSize(num_entries) * entry_len;
-        uint64_t bucket_length = 0;
-        // The number of buckets needed (the smallest power of 2 greater than 2 * num_entries).
-        while ((1ULL << bucket_length) < 2 * num_entries) bucket_length++;
-        // memset(memory, 0, memory_len);
-
-        uint64_t read_pos = input_disk_begin;
-        std::thread future([&]() {input_disk.Read(read_pos, memory, num_entries * entry_len); });
-
-        std::vector<size_t> idx(num_entries);
-        std::vector<size_t> pos(num_entries);
-        std::iota(idx.begin(), idx.end(), 0);
-        future.join();
-        for(size_t i = 0; i < pos.size(); ++i) {
-            pos[i] = Util::ExtractNum(memory + i * entry_len, entry_len, bits_begin, bucket_length);
-        }
-        // std::cout << "Entry num " << idx.size() << "\n";
-        parallel_sort(memory, pos.data(), idx.data(), input_disk_begin, 0, idx.size(), entry_len, bits_begin);
-
-        // std::stable_sort(idx.begin(), idx.end(), [&](size_t i1, size_t i2) {
-        //     return Util::MemCmpBits(
-        //                memory + i1 * entry_len, memory + i2 * entry_len, entry_len, bits_begin) < 0;
-        // });
-
-        for (uint64_t i = 0; i < num_entries; ++i) {
-            int cur = i;
-            while (i != idx[cur] && idx[cur] < idx.size()) {
-                std::swap_ranges(memory + cur * entry_len, memory + cur * entry_len + entry_len, memory + idx[cur] * entry_len);
-                int tmp = cur;
-                cur = idx[cur];
-                idx[tmp] = idx.size();
-            }
-            idx[cur] = idx.size();
-        }
-        return;
-    }
 }
 
 #endif  // SRC_CPP_UNIFORMSORT_HPP_

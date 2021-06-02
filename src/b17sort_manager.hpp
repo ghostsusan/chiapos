@@ -231,65 +231,65 @@ private:
 
     inline void SortBucket(int quicksort)
     {
-        this->done = true;
-        if (next_bucket_to_sort >= this->mem_bucket_pointers.size()) {
-            throw InvalidValueException("Trying to sort bucket which does not exist.");
-        }
-        uint64_t bucket_i = this->next_bucket_to_sort;
-        uint64_t bucket_entries = bucket_write_pointers[bucket_i] / this->entry_size;
-        uint64_t entries_fit_in_memory = this->memory_size / this->entry_size;
+        // this->done = true;
+        // if (next_bucket_to_sort >= this->mem_bucket_pointers.size()) {
+        //     throw InvalidValueException("Trying to sort bucket which does not exist.");
+        // }
+        // uint64_t bucket_i = this->next_bucket_to_sort;
+        // uint64_t bucket_entries = bucket_write_pointers[bucket_i] / this->entry_size;
+        // uint64_t entries_fit_in_memory = this->memory_size / this->entry_size;
 
-        uint32_t entry_len_memory = this->entry_size - this->begin_bits / 8;
+        // uint32_t entry_len_memory = this->entry_size - this->begin_bits / 8;
 
-        double have_ram = entry_size * entries_fit_in_memory / (1024.0 * 1024.0 * 1024.0);
-        double qs_ram = entry_size * bucket_entries / (1024.0 * 1024.0 * 1024.0);
-        double u_ram =
-            Util::RoundSize(bucket_entries) * entry_len_memory / (1024.0 * 1024.0 * 1024.0);
+        // double have_ram = entry_size * entries_fit_in_memory / (1024.0 * 1024.0 * 1024.0);
+        // double qs_ram = entry_size * bucket_entries / (1024.0 * 1024.0 * 1024.0);
+        // double u_ram =
+        //     Util::RoundSize(bucket_entries) * entry_len_memory / (1024.0 * 1024.0 * 1024.0);
 
-        if (bucket_entries > entries_fit_in_memory) {
-            throw InsufficientMemoryException(
-                "Not enough memory for sort in memory. Need to sort " +
-                std::to_string(this->bucket_write_pointers[bucket_i] / (1024.0 * 1024.0 * 1024.0)) +
-                "GiB");
-        }
-        bool last_bucket = (bucket_i == this->mem_bucket_pointers.size() - 1) ||
-                           this->bucket_write_pointers[bucket_i + 1] == 0;
-        bool force_quicksort = (quicksort == 1) || (quicksort == 2 && last_bucket);
-        // Do SortInMemory algorithm if it fits in the memory
-        // (number of entries required * entry_len_memory) <= total memory available
-        if (!force_quicksort &&
-            Util::RoundSize(bucket_entries) * entry_len_memory <= this->memory_size) {
-            std::cout << "\tBucket " << bucket_i << " uniform sort. Ram: " << std::fixed
-                      << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
-                      << "GiB, qs min: " << qs_ram << "GiB." << std::endl;
-            UniformSort::SortToMemory(
-                this->bucket_files[bucket_i],
-                0,
-                memory_start,
-                this->entry_size,
-                bucket_entries,
-                this->begin_bits + this->log_num_buckets);
-        } else {
-            // Are we in Compress phrase 1 (quicksort=1) or is it the last bucket (quicksort=2)?
-            // Perform quicksort if so (SortInMemory algorithm won't always perform well), or if we
-            // don't have enough memory for uniform sort
-            std::cout << "\tBucket " << bucket_i << " QS. Ram: " << std::fixed
-                      << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
-                      << "GiB, qs min: " << qs_ram << "GiB. force_qs: " << force_quicksort
-                      << std::endl;
-            this->bucket_files[bucket_i].Read(
-                0, this->memory_start, bucket_entries * this->entry_size);
-            QuickSort::Sort(this->memory_start, this->entry_size, bucket_entries, this->begin_bits);
-        }
+        // if (bucket_entries > entries_fit_in_memory) {
+        //     throw InsufficientMemoryException(
+        //         "Not enough memory for sort in memory. Need to sort " +
+        //         std::to_string(this->bucket_write_pointers[bucket_i] / (1024.0 * 1024.0 * 1024.0)) +
+        //         "GiB");
+        // }
+        // bool last_bucket = (bucket_i == this->mem_bucket_pointers.size() - 1) ||
+        //                    this->bucket_write_pointers[bucket_i + 1] == 0;
+        // bool force_quicksort = (quicksort == 1) || (quicksort == 2 && last_bucket);
+        // // Do SortInMemory algorithm if it fits in the memory
+        // // (number of entries required * entry_len_memory) <= total memory available
+        // if (!force_quicksort &&
+        //     Util::RoundSize(bucket_entries) * entry_len_memory <= this->memory_size) {
+        //     // std::cout << "\tBucket " << bucket_i << " uniform sort. Ram: " << std::fixed
+        //     //           << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
+        //     //           << "GiB, qs min: " << qs_ram << "GiB." << std::endl;
+        //     // UniformSort::SortToMemory(
+        //     //     this->bucket_files[bucket_i],
+        //     //     0,
+        //     //     memory_start,
+        //     //     this->entry_size,
+        //     //     bucket_entries,
+        //     //     this->begin_bits + this->log_num_buckets);
+        // } else {
+        //     // Are we in Compress phrase 1 (quicksort=1) or is it the last bucket (quicksort=2)?
+        //     // Perform quicksort if so (SortInMemory algorithm won't always perform well), or if we
+        //     // don't have enough memory for uniform sort
+        //     // std::cout << "\tBucket " << bucket_i << " QS. Ram: " << std::fixed
+        //     //           << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
+        //     //           << "GiB, qs min: " << qs_ram << "GiB. force_qs: " << force_quicksort
+        //     //           << std::endl;
+        //     // this->bucket_files[bucket_i].Read(
+        //     //     0, this->memory_start, bucket_entries * this->entry_size);
+        //     // QuickSort::Sort(this->memory_start, this->entry_size, bucket_entries, this->begin_bits);
+        // }
 
-        // Deletes the bucket file
-        std::string filename = this->bucket_files[bucket_i].GetFileName();
-        this->bucket_files[bucket_i].Close();
-        fs::remove(fs::path(filename));
+        // // Deletes the bucket file
+        // std::string filename = this->bucket_files[bucket_i].GetFileName();
+        // this->bucket_files[bucket_i].Close();
+        // fs::remove(fs::path(filename));
 
-        this->final_position_start = this->final_position_end;
-        this->final_position_end += this->bucket_write_pointers[bucket_i];
-        this->next_bucket_to_sort += 1;
+        // this->final_position_start = this->final_position_end;
+        // this->final_position_end += this->bucket_write_pointers[bucket_i];
+        // this->next_bucket_to_sort += 1;
     }
 };
 

@@ -51,6 +51,81 @@
 //     
 
 namespace QuickSort {
+    inline static void SortInner2(
+        uint8_t *memory,
+        uint64_t memory_len,
+        uint32_t L,
+        uint32_t bits_begin,
+        uint64_t begin,
+        uint64_t end,
+        uint32_t *idx_arr)
+    {
+        size_t pivot;
+        if (end - begin <= 5) {
+
+            for (uint64_t i = begin + 1; i < end; i++) {
+                uint64_t j = i;
+                uint32_t pivot = idx_arr[i]; 
+                while (j > begin &&
+                       Util::MemCmpBits(memory + idx_arr[j - 1] * L, memory + pivot * L, L, bits_begin) > 0) {
+                    idx_arr[j] = idx_arr[j - 1];
+                    j--;
+                }
+                idx_arr[j] = pivot;
+            }
+            return;
+        }
+
+        uint64_t lo = begin;
+        uint64_t hi = end - 1;
+
+        pivot = idx_arr[hi];
+        bool left_side = true;
+
+        while (lo < hi) {
+            if (left_side) {
+                if (Util::MemCmpBits(memory + idx_arr[lo] * L, memory + pivot * L, L, bits_begin) < 0) {
+                    ++lo;
+                } else {
+                    idx_arr[hi] = idx_arr[lo];
+                    --hi;
+                    left_side = false;
+                }
+            } else {
+                if (Util::MemCmpBits(memory + idx_arr[hi] * L, memory + pivot * L , L, bits_begin) > 0) {
+                    --hi;
+                } else {
+                    idx_arr[lo] = idx_arr[hi];
+                    ++lo;
+                    left_side = true;
+                }
+            }
+        }
+        idx_arr[lo] = pivot;
+        if (lo - begin <= end - lo) {
+            auto future = std::async(lo - begin > 65535 ? std::launch::async : std::launch::deferred, SortInner2, memory, memory_len, L, bits_begin, begin, lo, idx_arr);
+            SortInner2(memory, memory_len, L, bits_begin, lo + 1, end, idx_arr);
+            future.wait();
+        } else {
+            auto future = std::async(end - lo  > 65535 ? std::launch::async : std::launch::deferred, SortInner2, memory, memory_len, L, bits_begin, lo + 1, end, idx_arr);
+            SortInner2(memory, memory_len, L, bits_begin, begin, lo, idx_arr);
+            future.wait();
+        }
+    }
+
+    inline void Sort2(
+        uint8_t *const memory,
+        uint32_t const entry_len,
+        uint64_t const num_entries,
+        uint32_t const bits_begin,
+        uint32_t *idx_arr)
+    {
+        // std::cout << "EntryLen: " << entry_len << ", bits_begin: " << bits_begin << "\n";
+        uint64_t const memory_len = (uint64_t)entry_len * num_entries;
+        SortInner2(memory, memory_len, entry_len, bits_begin, 0, num_entries, idx_arr);
+        // SortInner2(memory, memory_len, entry_len, bits_begin, 0, 1000, idx_arr);
+    }
+
     inline static void SortInner(
         uint8_t *memory,
         uint64_t memory_len,
@@ -123,6 +198,7 @@ namespace QuickSort {
         auto const pivot_space = std::make_unique<uint8_t[]>(entry_len);
         SortInner(memory, memory_len, entry_len, bits_begin, 0, num_entries, pivot_space.get());
     }
+
 
 }
 

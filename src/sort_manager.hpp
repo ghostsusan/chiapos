@@ -137,6 +137,7 @@ public:
         }
         prev_bucket_buf_.reset();
         memory_start_.reset();
+        idx_arr_.reset();
         final_position_end = 0;
         // TODO: Ideally, bucket files should be deleted as we read them (in the
         // last reading pass over them)
@@ -163,7 +164,8 @@ public:
             throw InvalidValueException("Position too small");
         }
         assert(memory_start_);
-        return memory_start_.get() + (position - this->final_position_start);
+        assert((position - this->final_position_start) % entry_size_ == 0);
+        return memory_start_.get() + idx_arr_[(position - this->final_position_start) / entry_size_] * entry_size_;
     }
 
     bool CloseToNewBucket(uint64_t position) const
@@ -189,13 +191,15 @@ public:
             // save some of the current bucket, to allow some reverse-tracking
             // in the reading pattern,
             // position is the first position that we need in the new array
-            uint64_t const cache_size = (this->final_position_end - position);
+
+            assert((this->final_position_end - position) % entry_size_ == 0);
             prev_bucket_buf_.reset(new uint8_t[prev_bucket_buf_size]);
             memset(prev_bucket_buf_.get(), 0x00, this->prev_bucket_buf_size);
-            memcpy(
-                prev_bucket_buf_.get(),
-                memory_start_.get() + position - this->final_position_start,
-                cache_size);
+            auto ptr = prev_bucket_buf_.get();
+            for (auto i = (position - this->final_position_start)/entry_size_ ; i < (this->final_position_end - this->final_position_start)/ entry_size_;  ++i) {
+                memcpy(ptr, memory_start_.get() + idx_arr_[i] * entry_size_, entry_size_);
+                ptr += entry_size_;
+            }
         }
 
         SortBucket();
@@ -235,6 +239,7 @@ private:
         BufferedDisk file;
     };
 
+    std::unique_ptr<uint32_t[]> idx_arr_;
     // The buffer we use to sort buckets in-memory
     std::unique_ptr<uint8_t[]> memory_start_;
     // Size of the whole memory array
@@ -274,13 +279,17 @@ private:
         }
         uint64_t const bucket_i = this->next_bucket_to_sort;
         bucket_t& b = buckets_[bucket_i];
-        uint64_t const bucket_entries = b.write_pointer / entry_size_;
+        uint64_t bucket_entries = b.write_pointer / entry_size_;
         uint64_t const entries_fit_in_memory = this->memory_size_ / entry_size_;
 
         double const have_ram = entry_size_ * entries_fit_in_memory / (1024.0 * 1024.0 * 1024.0);
-        double const qs_ram = entry_size_ * bucket_entries / (1024.0 * 1024.0 * 1024.0);
+        double const qs_ram = entry_size_ * (sizeof(uint32_t) + bucket_entries) / (1024.0 * 1024.0 * 1024.0);
         double const u_ram =
             Util::RoundSize(bucket_entries) * entry_size_ / (1024.0 * 1024.0 * 1024.0);
+
+ 
+
+        assert(bucket_entries < UINT32_MAX);
 
         if (bucket_entries > entries_fit_in_memory) {
             throw InsufficientMemoryException(
@@ -294,10 +303,16 @@ private:
         bool const force_quicksort = (strategy_ == strategy_t::quicksort)
             || (strategy_ == strategy_t::quicksort_last && last_bucket);
 
-        // Do SortInMemory algorithm if it fits in the memory
-        // (number of entries required * entry_size_) <= total memory available
-        if (!force_quicksort &&
-            Util::RoundSize(bucket_entries) * entry_size_ <= memory_size_) {
+        uint64_t bucket_length = 0;
+        // The number of buckets needed (the smallest power of 2 greater than 2 * num_entries).
+        while ((1ULL << bucket_length) < 2 * bucket_entries) bucket_length++;
+
+
+        b.underlying_file.Read(0, memory_start_.get(), bucket_entries * entry_size_);
+        auto round_size = Util::RoundSize(bucket_entries);
+        if (!force_quicksort && round_size * sizeof(uint32_t) <= memory_size_) {
+            idx_arr_.reset(new uint32_t[round_size]);
+            memset(idx_arr_.get(), 0xFF, sizeof(uint32_t) * round_size);
             std::cout << "\tBucket " << bucket_i << " uniform sort. Ram: " << std::fixed
                       << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
                       << "GiB, qs min: " << qs_ram << "GiB." << std::endl;
@@ -307,8 +322,14 @@ private:
                 memory_start_.get(),
                 entry_size_,
                 bucket_entries,
-                begin_bits_ + log_num_buckets_);
+                begin_bits_ + log_num_buckets_, idx_arr_.get());
         } else {
+            // std::unique_ptr<uint32_t[]> idx_arr2_;
+            idx_arr_.reset(new uint32_t[bucket_entries]);
+            for(size_t i = 0; i < bucket_entries; ++i) {
+                idx_arr_[i] = i;
+            }
+      
             // Are we in Compress phrase 1 (quicksort=1) or is it the last bucket (quicksort=2)?
             // Perform quicksort if so (SortInMemory algorithm won't always perform well), or if we
             // don't have enough memory for uniform sort
@@ -316,18 +337,17 @@ private:
                       << std::setprecision(3) << have_ram << "GiB, u_sort min: " << u_ram
                       << "GiB, qs min: " << qs_ram << "GiB. force_qs: " << force_quicksort
                       << std::endl;
-            b.underlying_file.Read(0, memory_start_.get(), bucket_entries * entry_size_);
-            QuickSort::Sort(memory_start_.get(), entry_size_, bucket_entries, begin_bits_ + log_num_buckets_);
+            QuickSort::Sort2(memory_start_.get(), entry_size_, bucket_entries, begin_bits_ + log_num_buckets_, idx_arr_.get());
         }
 
-        // Deletes the bucket file
-        std::string filename = b.file.GetFileName();
-        b.underlying_file.Close();
-        fs::remove(fs::path(filename));
+            // Deletes the bucket file
+            std::string filename = b.file.GetFileName();
+            b.underlying_file.Close();
+            fs::remove(fs::path(filename));
 
-        this->final_position_start = this->final_position_end;
-        this->final_position_end += b.write_pointer;
-        this->next_bucket_to_sort += 1;
+            this->final_position_start = this->final_position_end;
+            this->final_position_end += b.write_pointer;
+            this->next_bucket_to_sort += 1;
     }
 };
 
